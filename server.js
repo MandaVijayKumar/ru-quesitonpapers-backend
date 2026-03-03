@@ -30,6 +30,7 @@ const db = mysql.createPool({
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
   port: process.env.DB_PORT,
+    timezone: "+05:30",
   ssl: {
     rejectUnauthorized: false
   }

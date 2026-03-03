@@ -18,22 +18,23 @@ const upload = multer({ storage: multer.memoryStorage() });
 
 /* ================= DATABASE CONNECTION ================= */
 
-// const db = mysql.createPool({
-//   host: process.env.DB_HOST,
-//   user: process.env.DB_USER,
-//   password: process.env.DB_PASSWORD,
-//   database: process.env.DB_NAME
-// });
 const db = mysql.createPool({
   host: process.env.DB_HOST,
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
-  port: process.env.DB_PORT,
-  ssl: {
-    rejectUnauthorized: false
-  }
+  database: process.env.DB_NAME
 });
+// const db = mysql.createPool({
+//   host: process.env.DB_HOST,
+//   user: process.env.DB_USER,
+//   password: process.env.DB_PASSWORD,
+//   database: process.env.DB_NAME,
+//   port: process.env.DB_PORT,
+//   timezone: "+05:30",   
+//   ssl: {
+//     rejectUnauthorized: false
+//   }
+// });
 
 db.getConnection((err, connection) => {
   if (err) console.error("Database connection failed:", err);
@@ -186,113 +187,144 @@ app.post(
 
       await connection.beginTransaction();
 
-     for (const row of rows) {
+      let successSubjects = [];
+      let failedSubjects = [];
 
-  try {
+      for (const row of rows) {
 
-    console.log("Processing:", row.subject_code);
-
-    const {
-      subject_code,
-      subject_name,
-      course_name,
-      department_name,
-      semester_number,
-      exam_date,
-      session,
-      exam_time,
-      release_time,
-      expiry_time,
-      center_codes,
-      pdf_file_name
-    } = row;
-
-    if (!subject_code)
-      throw new Error("Missing subject_code");
-
-    // ===== Insert Subject If Not Exists =====
-    const [subjectCheck] = await connection.query(
-      "SELECT subject_code FROM subjects WHERE subject_code = ?",
-      [subject_code]
-    );
-
-    if (!subjectCheck.length) {
-
-      await connection.query(
-        `INSERT INTO subjects
-         (subject_code, subject_name, course_name, department_name, semester_number)
-         VALUES (?, ?, ?, ?, ?)`,
-        [
+        const {
           subject_code,
           subject_name,
           course_name,
           department_name,
-          semester_number
-        ]
-      );
-    }
+          semester_number,
+          exam_date,
+          session,
+          exam_time,
+          release_time,
+          expiry_time,
+          center_codes,
+          pdf_file_name
+        } = row;
 
-    // ===== Convert Dates Properly =====
-    const formattedExamDate = excelDateToMySQL(exam_date)?.slice(0, 10);
-    const formattedReleaseTime = excelDateToMySQL(release_time);
-    const formattedExpiryTime = excelDateToMySQL(expiry_time);
+        try {
 
-    // ===== Find PDF Recursively =====
-    const pdfPath = findFileRecursive(extractPath, pdf_file_name);
+          if (!subject_code || !subject_name)
+            throw new Error("Missing subject_code or subject_name");
 
-    if (!pdfPath)
-      throw new Error("PDF not found in ZIP");
+          // ===== Check Duplicate Question Paper =====
+          const [paperCheck] = await connection.query(
+            "SELECT subject_code FROM question_papers WHERE subject_code = ?",
+            [subject_code]
+          );
 
-    // ===== Copy PDF =====
-    const finalPath = path.join(uploadDir, pdf_file_name);
-    fs.copyFileSync(pdfPath, finalPath);
+          if (paperCheck.length)
+            throw new Error("Duplicate subject_code already exists");
 
-    // ===== Insert Question Paper =====
-    await connection.query(
-      `INSERT INTO question_papers
+          // ===== Insert Subject If Not Exists =====
+          const [subjectCheck] = await connection.query(
+            "SELECT subject_code FROM subjects WHERE subject_code = ?",
+            [subject_code]
+          );
+
+          if (!subjectCheck.length) {
+
+            await connection.query(
+              `INSERT INTO subjects
+         (subject_code, subject_name, course_name, department_name, semester_number)
+         VALUES (?, ?, ?, ?, ?)`,
+              [
+                subject_code,
+                subject_name,
+                course_name,
+                department_name,
+                semester_number
+              ]
+            );
+          }
+
+          // ===== Date Conversion =====
+          const formattedExamDate = excelDateToMySQL(exam_date)?.slice(0, 10);
+          const formattedReleaseTime = excelDateToMySQL(release_time);
+          const formattedExpiryTime = excelDateToMySQL(expiry_time);
+
+          if (!formattedReleaseTime || !formattedExpiryTime)
+            throw new Error("Invalid release_time or expiry_time");
+
+          // ===== Validate Centers =====
+          const centers = center_codes?.split(",") || [];
+
+          for (const code of centers) {
+            const [centerCheck] = await connection.query(
+              "SELECT center_code FROM exam_centers WHERE center_code = ?",
+              [code.trim()]
+            );
+
+            if (!centerCheck.length)
+              throw new Error(`Center not found: ${code.trim()}`);
+          }
+
+          // ===== Find PDF =====
+          const pdfPath = findFileRecursive(extractPath, pdf_file_name);
+
+          if (!pdfPath)
+            throw new Error(`PDF not found: ${pdf_file_name}`);
+
+          const finalPath = path.join(uploadDir, pdf_file_name);
+          fs.copyFileSync(pdfPath, finalPath);
+
+          // ===== Insert Question Paper =====
+          await connection.query(
+            `INSERT INTO question_papers
        (subject_code, exam_date, session, exam_time,
         release_time, expiry_time, file_path)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [
-        subject_code,
-        formattedExamDate,
-        session,
-        exam_time,
-        formattedReleaseTime,
-        formattedExpiryTime,
-        pdf_file_name
-      ]
-    );
+            [
+              subject_code,
+              formattedExamDate,
+              session,
+              exam_time,
+              formattedReleaseTime,
+              formattedExpiryTime,
+              pdf_file_name
+            ]
+          );
 
-    // ===== Insert Center Mapping =====
-    const centers = center_codes.split(",");
-
-    for (const code of centers) {
-
-      await connection.query(
-        `INSERT INTO paper_center_map
+          // ===== Insert Center Mapping =====
+          for (const code of centers) {
+            await connection.query(
+              `INSERT INTO paper_center_map
          (subject_code, center_code)
          VALUES (?, ?)`,
-        [subject_code, code.trim()]
-      );
-    }
+              [subject_code, code.trim()]
+            );
+          }
 
-    success++;
+          successSubjects.push({
+            subject_code,
+            subject_name
+          });
 
-  } catch (err) {
-    console.log("Row failed:", err.message);
-    failed++;
-  }
-}
+        } catch (err) {
+
+          failedSubjects.push({
+            subject_code: subject_code || "UNKNOWN",
+            subject_name: subject_name || "UNKNOWN",
+            reason: err.message
+          });
+
+        }
+      }
 
       await connection.commit();
       connection.release();
-
       res.json({
         message: "Bulk upload completed",
         total: rows.length,
-        success,
-        failed
+        successCount: successSubjects.length,
+        failedCount: failedSubjects.length,
+        successSubjects,
+        failedSubjects
       });
 
     } catch (error) {
@@ -1128,6 +1160,7 @@ app.get("/api/users", verifyToken, async (req, res) => {
         u.user_id,
         u.name,
         u.email,
+        u.password,
         u.role,
         u.center_code,
         u.is_active,
@@ -1143,6 +1176,32 @@ app.get("/api/users", verifyToken, async (req, res) => {
 
   } catch (err) {
     res.status(500).json({ message: "Server error" });
+  }
+
+});
+app.put("/api/papers/schedule/:subject_code", verifyToken, async (req, res) => {
+
+  if (req.user.role !== "controller")
+    return res.status(403).json({ message: "Access denied" });
+
+  const { subject_code } = req.params;
+  const { exam_date, release_time, expiry_time } = req.body;
+
+  try {
+
+    await db.promise().query(
+      `UPDATE question_papers
+       SET exam_date = ?,
+           release_time = ?,
+           expiry_time = ?
+       WHERE subject_code = ?`,
+      [exam_date, release_time, expiry_time, subject_code]
+    );
+
+    res.json({ message: "Schedule updated successfully" });
+
+  } catch (err) {
+    res.status(500).json({ message: "Schedule update failed" });
   }
 
 });

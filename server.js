@@ -18,23 +18,23 @@ const upload = multer({ storage: multer.memoryStorage() });
 
 /* ================= DATABASE CONNECTION ================= */
 
-const db = mysql.createPool({
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME
-});
 // const db = mysql.createPool({
 //   host: process.env.DB_HOST,
 //   user: process.env.DB_USER,
 //   password: process.env.DB_PASSWORD,
-//   database: process.env.DB_NAME,
-//   port: process.env.DB_PORT,
-//   timezone: "+05:30",   
-//   ssl: {
-//     rejectUnauthorized: false
-//   }
+//   database: process.env.DB_NAME
 // });
+const db = mysql.createPool({
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
+  port: process.env.DB_PORT,
+  timezone: "+05:30",   
+  ssl: {
+    rejectUnauthorized: false
+  }
+});
 
 db.getConnection((err, connection) => {
   if (err) console.error("Database connection failed:", err);

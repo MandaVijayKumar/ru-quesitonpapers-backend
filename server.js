@@ -860,13 +860,13 @@ app.get(
       const pdfDoc = await PDFDocument.load(existingPdfBytes);
       const pages = pdfDoc.getPages();
 
-      // ===== Add Watermark To Each Page =====
+      // ===== Watermark =====
       pages.forEach((page) => {
 
         const { width, height } = page.getSize();
 
         page.drawText(
-          `CONFIDENTIAL - Center: ${centerCode}`,
+          ` Center: ${centerCode}`,
           {
             x: width / 4,
             y: height / 2,
@@ -880,21 +880,65 @@ app.get(
 
       const pdfBytes = await pdfDoc.save();
 
-      // ===== Send Watermarked PDF =====
+      // ===== INSERT DOWNLOAD LOG =====
+      await db.promise().query(
+        `INSERT INTO download_logs
+        (subject_code, center_code, principal_email, principal_name, ip_address)
+        VALUES (?, ?, ?, ?, ?)`,
+        [
+          subjectCode,
+          centerCode,
+          req.user.email,
+          req.user.name,
+          req.ip
+        ]
+      );
+
+      // ===== Send PDF =====
       res.setHeader(
         "Content-Disposition",
         `attachment; filename=${subjectCode}_${centerCode}.pdf`
       );
 
       res.setHeader("Content-Type", "application/pdf");
+
       res.send(Buffer.from(pdfBytes));
 
     } catch (err) {
+
       console.log(err);
       res.status(500).json({ message: "Download failed" });
+
     }
   }
 );
+app.get("/api/controller/download-logs", verifyToken, async (req, res) => {
+
+  if (req.user.role !== "controller")
+    return res.status(403).json({ message: "Access denied" });
+
+  const [rows] = await db.promise().query(`
+    SELECT
+      dl.subject_code,
+      s.subject_name,
+      dl.center_code,
+      ec.center_name,
+      dl.principal_email,
+      dl.principal_name,
+      dl.downloaded_at
+    FROM download_logs dl
+
+    LEFT JOIN subjects s
+    ON dl.subject_code = s.subject_code
+
+    LEFT JOIN exam_centers ec
+    ON dl.center_code = ec.center_code
+
+    ORDER BY dl.downloaded_at DESC
+  `);
+
+  res.json(rows);
+});
 app.get("/api/principal/papers", verifyToken, async (req, res) => {
 
   if (req.user.role !== "principal")
@@ -1202,6 +1246,86 @@ app.put("/api/papers/schedule/:subject_code", verifyToken, async (req, res) => {
 
   } catch (err) {
     res.status(500).json({ message: "Schedule update failed" });
+  }
+
+});
+app.get("/api/logs/downloads", verifyToken, async (req, res) => {
+
+  if (req.user.role !== "controller")
+    return res.status(403).json({ message: "Access denied" });
+
+  try {
+
+    const [rows] = await db.promise().query(`
+      SELECT
+        dl.log_id,
+        dl.subject_code,
+        s.subject_name,
+        dl.center_code,
+        ec.center_name,
+        dl.principal_name,
+        dl.principal_email,
+        dl.downloaded_at
+      FROM download_logs dl
+
+      LEFT JOIN subjects s
+        ON dl.subject_code = s.subject_code
+
+      LEFT JOIN exam_centers ec
+        ON dl.center_code = ec.center_code
+
+      ORDER BY dl.downloaded_at DESC
+    `);
+
+    res.json(rows);
+
+  } catch (err) {
+
+    res.status(500).json({ message: "Failed to fetch logs" });
+
+  }
+
+});
+app.get("/api/papers/download/:subject_code", verifyToken, async (req, res) => {
+
+  if (req.user.role !== "principal")
+    return res.status(403).json({ message: "Access denied" });
+
+  const { subject_code } = req.params;
+
+  try {
+
+    const [rows] = await db.promise().query(
+      "SELECT file_path FROM question_papers WHERE subject_code=? AND is_released=TRUE",
+      [subject_code]
+    );
+
+    if (!rows.length)
+      return res.status(404).json({ message: "Paper not available" });
+
+    const filePath = path.join(__dirname, "uploads", rows[0].file_path);
+
+    // ===== INSERT DOWNLOAD LOG =====
+    await db.promise().query(
+      `INSERT INTO download_logs
+      (subject_code, center_code, principal_name, principal_email, ip_address)
+      VALUES (?, ?, ?, ?, ?)`,
+      [
+        subject_code,
+        req.user.center_code,
+        req.user.name,
+        req.user.email,
+        req.ip
+      ]
+    );
+
+    res.download(filePath);
+
+  } catch (err) {
+
+    console.error(err);
+    res.status(500).json({ message: "Download failed" });
+
   }
 
 });
